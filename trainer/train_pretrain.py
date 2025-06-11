@@ -3,17 +3,17 @@ import sys
 __package__ = "trainer"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import argparse
-import time
-import math
-import warnings
-import torch
-import torch.distributed as dist
-from torch import optim, nn
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
-from contextlib import nullcontext
-from transformers import AutoTokenizer
+import argparse  # 解析命令行参数
+import time  # 计时
+import math  # 数学运算
+import warnings  # 警告过滤
+import torch  # PyTorch
+import torch.distributed as dist  # 分布式训练
+from torch import optim, nn  # 优化器和神经网络模块
+from torch.nn.parallel import DistributedDataParallel  # 分布式封装
+from torch.utils.data import DataLoader, DistributedSampler  # 数据加载相关
+from contextlib import nullcontext  # 上下文管理器
+from transformers import AutoTokenizer  # Tokenizer 加载
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from dataset.lm_dataset import PretrainDataset
 
@@ -21,18 +21,22 @@ warnings.filterwarnings('ignore')
 
 
 def Logger(content):
+    """在分布式环境下，仅主进程输出日志。"""
     if not ddp or dist.get_rank() == 0:
         print(content)
 
 
 def get_lr(current_step, total_steps, lr):
+    """使用余弦退火策略计算学习率。"""
     return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
 
 def train_epoch(epoch, wandb):
+    """执行单个训练周期。"""
     loss_fct = nn.CrossEntropyLoss(reduction='none')
     start_time = time.time()
     for step, (X, Y, loss_mask) in enumerate(train_loader):
+        # 将数据移动到目标设备
         X = X.to(args.device)
         Y = Y.to(args.device)
         loss_mask = loss_mask.to(args.device)
@@ -51,6 +55,7 @@ def train_epoch(epoch, wandb):
             loss += res.aux_loss
             loss = loss / args.accumulation_steps
 
+        # 反向传播，梯度累积
         scaler.scale(loss).backward()
 
         if (step + 1) % args.accumulation_steps == 0:
@@ -62,6 +67,7 @@ def train_epoch(epoch, wandb):
 
             optimizer.zero_grad(set_to_none=True)
 
+        # 定期输出日志并记录到wandb
         if step % args.log_interval == 0:
             spend_time = time.time() - start_time
             Logger(
@@ -95,6 +101,7 @@ def train_epoch(epoch, wandb):
 
 
 def init_model(lm_config):
+    """初始化模型与分词器，并打印参数规模。"""
     tokenizer = AutoTokenizer.from_pretrained('../model/')
     model = MiniMindForCausalLM(lm_config).to(args.device)
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
@@ -103,6 +110,7 @@ def init_model(lm_config):
 
 def init_distributed_mode():
     if not ddp: return
+    """分布式训练的初始化，设置通信环境与device。"""
     global ddp_local_rank, DEVICE
 
     dist.init_process_group(backend="nccl")
